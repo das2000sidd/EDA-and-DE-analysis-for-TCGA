@@ -1,0 +1,467 @@
+---
+title: "EDA_tcga"
+output:
+  pdf_document: default
+  html_document: default
+date: "2025-06-09"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(foreign)
+library(tidyverse)
+```
+
+Reading in tcga data
+
+```{r}
+tcga = read.csv("TCGA-READ_clinical.csv",header = T,stringsAsFactors = F)
+#str(tcga)
+```
+
+Checking data structure
+
+```{r}
+str(tcga)
+```
+
+Most data types that are not numeric should be categorical. So will convert the
+characters to categorical
+
+```{r}
+tcga = tcga %>%
+  mutate_if(is.character, as.factor)
+  
+str(tcga)
+```
+
+
+Drop extra factors from variables that are categorical
+
+Count the NA values per sample
+
+```{r}
+na_count = apply(tcga,2,function(x){sum(is.na(x))})
+na_count_o = sort(na_count,decreasing = TRUE)
+na_count_o[1:10]
+varibles_half_na = names(na_count_o)[na_count_o >= max(na_count_o)/2]
+`%ni%` = Negate(`%in%`)
+tcga_use = tcga[,colnames(tcga) %ni% varibles_half_na]
+```
+Using mice for missing data analysis among remaining variables
+
+```{r}
+library(mice)
+library(VIM)
+## red is missing and blue is not missing
+missing_val_plot = aggr(tcga_use[,c(1:10)], col=c("blue","red"),
+                   numbers=TRUE,sortVard=TRUE,
+                     labels = names(tcga_use),cex.axis=.7,
+                       gap=3,ylab=c("porportion of missing","pattern"))
+
+
+
+#md.pattern(tcga_use,rotate.names = TRUE)
+```
+Display missing-data patterns
+```{r}
+md.pattern(tcga_use[,c(1:10)],rotate.names = TRUE) ## difficul tot understand
+md.pattern(tcga_use[,c(1,11:20)],rotate.names = TRUE)
+md.pattern(tcga_use[,c(1,21:26)],rotate.names = TRUE)
+md.pattern(tcga_use[,c(1,27:32)],rotate.names = TRUE)
+md.pattern(tcga_use[,c(1,33:42)],rotate.names = TRUE)
+
+```
+
+What could be some of the most interesting clinical variables?
+tissue_or_organ_of_origin - Rectum, NOS or  Rectosigmoid junction
+primary_diagnosis - Adenocarcinoma, NOS, 
+ajcc_pathologic_t
+ajcc_pathologic_m
+residual_disease
+site_of_resection_or_biopsy
+race
+gender
+ethnicity
+vital_status
+
+Majority of the Adenocarcinoma, NOS are ones are either Rectosigmoid junction or Rectum, NOS. Compare
+Most of the Rectosigmoid junction and reactum NOS are T3 in ajcc_pathologic_t
+Most of the Rectosigmoid junction and reactum NOS are M0 in ajcc_pathologic_m
+
+
+```{r}
+
+count_by_race_tissue_origin=tcga_use %>%
+  group_by(tissue_or_organ_of_origin, race) %>%
+  summarise(n= n()) 
+chisq.test(count_by_race_tissue_origin$race,count_by_race_tissue_origin$tissue_or_organ_of_origin)## No asso
+count_by_gender_tissue_origin=tcga_use %>%
+  group_by(tissue_or_organ_of_origin, gender) %>%
+  summarise(n= n()) 
+
+chisq.test(count_by_gender_tissue_origin$gender,count_by_gender_tissue_origin$tissue_or_organ_of_origin)## No asso
+```
+How is vital status affected by tumor grading or biopsy?
+
+```{r}
+vital_status_by_ajcc_t = tcga_use %>%
+  group_by(vital_status,ajcc_pathologic_t) %>%
+  summarise(n = n())
+
+chisq.test(vital_status_by_ajcc_t$vital_status,vital_status_by_ajcc_t$ajcc_pathologic_t)## No asso
+
+vital_status_by_ajcc_m = tcga_use %>%
+  group_by(vital_status,ajcc_pathologic_m) %>%
+  summarise(n = n())
+chisq.test(vital_status_by_ajcc_m$vital_status,vital_status_by_ajcc_m$ajcc_pathologic_m)## No asso
+
+
+vital_status_by_site_rejection_biopsy = tcga_use %>%
+  group_by(vital_status,site_of_resection_or_biopsy) %>%
+  summarise(n = n())
+
+chisq.test(vital_status_by_site_rejection_biopsy$vital_status,vital_status_by_site_rejection_biopsy$site_of_resection_or_biopsy)## No asso
+
+
+
+vital_status_by_primary_diagnosis = tcga_use %>%
+  group_by(vital_status,primary_diagnosis) %>%
+  summarise(n = n())
+
+
+chisq.test(vital_status_by_primary_diagnosis$vital_status,vital_status_by_primary_diagnosis$primary_diagnosis)## No asso
+
+```
+Does missingness of important variables associate with outcome?
+
+```{r}
+missing_ajcc_t <- as.factor(is.na(tcga_use$ajcc_pathologic_t))
+
+table(tcga_use$vital_status,missing_ajcc_t)
+
+fisher.test(tcga_use$vital_status,missing_ajcc_t)## Significant
+
+
+missing_ajcc_m <- as.factor(is.na(tcga_use$ajcc_pathologic_m))
+
+table(tcga_use$vital_status,missing_ajcc_m)
+
+fisher.test(tcga_use$vital_status,missing_ajcc_m)## Significant
+
+
+missing_site_resection_biopsy <- as.factor(is.na(tcga_use$site_of_resection_or_biopsy))
+
+table(tcga_use$vital_status,missing_site_resection_biopsy)
+
+#fisher.test(tcga_use$vital_status,missing_site_resection_biopsy)## one level in missing_site_resection_biopsy
+
+
+
+```
+Will adjust for missing_ajcc_t, missing_ajcc_m, gender, age, race and ethnicity while DE for gene exp and vital_status.
+
+Reading in gene expression data
+```{r}
+
+gene_exp = read.table(file="TCGA-READ_RNASeq_count_Data.txt",header = T,sep="\t",stringsAsFactors = F)
+
+sample_ids = colnames(gene_exp)
+
+```
+
+Cleaning_up_the_sample_IDs
+
+```{r}
+sample_ids_edited=str_replace_all(sample_ids,"\\.","_")
+colnames(gene_exp) = sample_ids_edited
+
+tcga_use$bcr_patient_barcode_mod = str_replace_all(tcga_use$bcr_patient_barcode,"-","_")
+
+```
+
+Now, going to take the order of the samples of the gene exp matrix and order the 
+metadata in the same order
+
+```{r}
+gene_exp_ids = colnames(gene_exp)
+
+gene_exp_ids = as.data.frame(gene_exp_ids)
+
+library(stringr)
+gene_exp_ids <- str_split_fixed(gene_exp_ids$gene_exp_ids, '_',7)
+gene_exp_ids = as.data.frame(gene_exp_ids)
+gene_exp_ids$New_RNA_id=paste(gene_exp_ids$V1,gene_exp_ids$V2,gene_exp_ids$V3,sep="_")
+
+length(intersect(gene_exp_ids$New_RNA_id,tcga_use$bcr_patient_barcode_mod)) ## 167 
+
+gene_exp_ids$Original_ID = colnames(gene_exp)
+
+
+colnames(gene_exp_ids)[1:7]=c("Project","TSS","Participant","Sample_Vial","Portion_Analyte","Plate","Center")
+
+```
+Going ot restrict the analysis to only tumor samples of vial A by filtering on the 4th field 
+of the name whereby 01-09 for tumor and 10-19 are normal
+```{r}
+table(gene_exp_ids$Sample)
+samples_use = subset(gene_exp_ids,gene_exp_ids$Sample_Vial=="01A")
+
+```
+Now going to use the order of the samples_use df to order the samples and extract the gene expression matrix for corresponding_Samples
+```{r}
+samples_use_clinical = left_join(samples_use,tcga_use,by=c("New_RNA_id"="bcr_patient_barcode_mod"))
+
+gene_exp_use = gene_exp[,samples_use_clinical$Original_ID]
+```
+
+Some variables have to still be converted to factor for the model
+```{r}
+
+
+samples_use_clinical$Portion_Analyte = as.factor(samples_use_clinical$Portion_Analyte)
+
+samples_use_clinical$age_diag_c = scale(samples_use_clinical$age_at_diagnosis,center = TRUE)
+```
+
+
+Now checking to see which of the adjusting variables have a lot of NA. Will drop it.
+
+```{r}
+NA_count = apply(samples_use_clinical,2,function(x){sum(is.na(x))})
+NA_count
+```
+
+
+
+Will adjust for missing_ajcc_t, missing_ajcc_m, gender, age, race and ethnicity, as well as portion and analyte while DE for vital_status 
+
+```{r}
+samples_use_clinical_final = samples_use_clinical[,c("Original_ID",
+  "vital_status","ajcc_pathologic_t","ajcc_pathologic_m","gender","age_diag_c","race","ethnicity","Portion_Analyte")]
+samples_use_clinical_final = samples_use_clinical_final[complete.cases(samples_use_clinical_final),]
+
+gene_exp_use = gene_exp[,samples_use_clinical_final$Original_ID]
+
+```
+Checking that the order of the samples in gene exp matrix and metdata are the same
+```{r}
+table(samples_use_clinical_final$Original_ID == colnames(gene_exp_use))
+```
+
+Now carrying out DE analysis using DESeq2
+
+```{r}
+
+library(DESeq2)
+library(edgeR)
+
+dds = DESeqDataSetFromMatrix(gene_exp_use,colData = samples_use_clinical_final,
+                             design = ~ vital_status + ajcc_pathologic_t + ajcc_pathologic_m + gender + age_diag_c + race + ethnicity + Portion_Analyte)
+
+
+keep = rowSums( cpm(dds) >2) >= 5 ## dds >2 in at least 5 of sequenced sampels
+
+table(keep)
+
+dds = dds[keep,]
+
+
+```
+```{r}
+ntd <- normTransform(dds)
+library("vsn")
+meanSdPlot(assay(ntd))
+vsd <- vst(dds, blind = FALSE)
+dds <- estimateSizeFactors(dds)
+
+```
+Now estimating the size factor and generating the PCA plots
+```{r}
+plotPCA(vsd, intgroup = c("vital_status")) +ggtitle("PCA by Vital status")
+plotPCA(vsd, intgroup = c("ajcc_pathologic_t")) +ggtitle("PCA by ajcc_pathologic_t")
+plotPCA(vsd, intgroup = c("ajcc_pathologic_m")) +ggtitle("PCA by ajcc_pathologic_m")
+plotPCA(vsd, intgroup = c("gender")) +ggtitle("PCA by gender")
+plotPCA(vsd, intgroup = c("race")) +ggtitle("PCA by race")
+plotPCA(vsd, intgroup = c("ethnicity")) +ggtitle("PCA by ethnicity")
+plotPCA(vsd, intgroup = c("Portion_Analyte")) +ggtitle("PCA by Portion_Analyte")
+
+
+```
+
+```{r}
+design(dds) = ~ vital_status + ajcc_pathologic_t + ajcc_pathologic_m + gender + age_diag_c + race + ethnicity + Portion_Analyte
+dds <- DESeq(dds)
+#plotMDS(dds)
+
+```
+Comparing gene expression pattern by vital_status
+
+```{r}
+res_by_vital_status <- results(dds, contrast=c("vital_status","Dead","Alive"),pAdjustMethod = "BH",format = "DataFrame",cooksCutoff = FALSE)
+res_by_vital_status_df=as.data.frame(res_by_vital_status)
+res_by_vital_status_df$Ensembl=rownames(res_by_vital_status_df)
+summary(res_by_vital_status)
+res_by_vital_status_df=res_by_vital_status_df[!is.na(res_by_vital_status_df$padj),]
+
+```
+Now annotating the genes
+
+```{r}
+library(stringr)
+res_by_vital_status_df[c('Ensembl', 'Dot')] <- str_split_fixed(res_by_vital_status_df$Ensembl, '\\.', 2)
+
+library(org.Hs.eg.db)
+res_by_vital_status_df$Entrez <- mapIds(org.Hs.eg.db, res_by_vital_status_df$Ensembl,keytype="ENSEMBL", column="ENTREZID")
+res_by_vital_status_df$Symbol <- mapIds(org.Hs.eg.db, res_by_vital_status_df$Entrez,keytype="ENTREZID", column="SYMBOL")
+res_by_vital_status_df$Genename <- mapIds(org.Hs.eg.db, res_by_vital_status_df$Entrez,keytype="ENTREZID", column="GENENAME")
+
+res_by_vital_status_df$Entrez=as.character(res_by_vital_status_df$Entrez)
+res_by_vital_status_df$Symbol=as.character(res_by_vital_status_df$Symbol)
+res_by_vital_status_df$Genename=as.character(res_by_vital_status_df$Genename)
+
+```
+Now generating a summary volcano plot
+
+```{r}
+library(ggrepel)
+res_by_vital_status_df$Log10_p_val = -log10(res_by_vital_status_df$padj)
+
+upreg = subset(res_by_vital_status_df,res_by_vital_status_df$log2FoldChange > 0 & res_by_vital_status_df$padj < 0.05)
+
+downreg = subset(res_by_vital_status_df,res_by_vital_status_df$log2FoldChange < 0 & res_by_vital_status_df$padj < 0.05)
+
+upreg_o = upreg[order(- upreg$Log10_p_val),]
+downreg_o = downreg[order(- downreg$Log10_p_val),]
+
+up_10=upreg_o[1:10,]
+dn_10=downreg_o[1:10,]
+
+up_dn_10 = rbind(up_10,dn_10)
+
+up_dn_10_no_NULL = subset(up_dn_10,up_dn_10$Symbol!="NULL")
+
+max_abs_val = max(abs(res_by_vital_status_df$log2FoldChange))
+
+p=ggplot(res_by_vital_status_df, aes(log2FoldChange, Log10_p_val)) +
+  theme_classic(base_size = 16)+
+  geom_point(data=res_by_vital_status_df, aes(x=log2FoldChange, y=Log10_p_val), colour="grey", size=2)
+p1 <- p +  geom_point(data = upreg_o, aes(x=log2FoldChange, y=Log10_p_val) ,size=3,color="red1")
+p2 <- p1 +  geom_point(data = downreg_o, aes(x=log2FoldChange, y=Log10_p_val) ,size=3,color="blue1")
+p3=p2+ggtitle(paste("Volcano plot for genes differentially expressed in individuals dying from Rectum adenocarcinoma relative to those surviving (READ) (Total genes=",nrow(res_by_vital_status_df),")"))+theme(plot.title = element_text(hjust = 0.5))+theme(plot.title = element_text(hjust = 0.5,size = 10))+annotate(geom="text", x=- max_abs_val, y=max(res_by_vital_status_df$Log10_p_val), label=paste(nrow(upreg_o),"genes up",sep=" "),color="red1",size=5)+annotate(geom="text", x=- max_abs_val  , y=max(max(res_by_vital_status_df$Log10_p_val))-0.5, label=paste(nrow(downreg_o),"genes down",sep=" "),color="blue1",size=5)+xlab("Log2FC")+ylim(0,max(res_by_vital_status_df$Log10_p_val))+xlim(-max_abs_val-1,max_abs_val + 1)+ylab("-Log10(adj. pval)")+geom_text_repel(data=up_dn_10_no_NULL,aes(x=log2FoldChange, y=Log10_p_val,label=Symbol),color="black",arrow=arrow(ends="last",type="open"),size=5,max.overlaps = Inf)
+p3
+```
+
+
+Generating aranging the genes in order to generate a Z score heatmap to show that expression data supports logFC data for
+the DE genes
+```{r}
+cpm_ob = cpm(dds)
+deg_order = rbind(upreg,downreg)
+deg_no_null = subset(deg_order,deg_order$Symbol!="NULL")
+
+
+cpm_diff_exp_genes = cpm_ob[rownames(deg_no_null),]
+rownames(cpm_diff_exp_genes) = deg_no_null$Symbol
+
+cpm_diff_exp_genes_dead = cpm_diff_exp_genes[,samples_use_clinical_final$Original_ID[samples_use_clinical_final$vital_status=="Dead"]]
+cpm_diff_exp_genes_alive = cpm_diff_exp_genes[,samples_use_clinical_final$Original_ID[samples_use_clinical_final$vital_status=="Alive"]]
+cpm_diff_exp_genes_alive_dead=cbind(cpm_diff_exp_genes_alive,cpm_diff_exp_genes_dead)
+
+
+alive_samp=subset(samples_use_clinical_final,samples_use_clinical_final$vital_status=="Alive")
+dead_samp=subset(samples_use_clinical_final,samples_use_clinical_final$vital_status=="Dead")
+alive_Dead_samp = rbind(alive_samp,dead_samp)
+rownames(alive_Dead_samp)=alive_Dead_samp$Original_ID
+
+length(intersect(colnames(cpm_diff_exp_genes_alive_dead),rownames(alive_Dead_samp)))
+
+```
+Actual generation of the Z score heatmap for differentially expressed genes
+
+```{r}
+#stage_race_eth=stage_1_4_samp[,c("tumor_stage","race","ethnicity")]
+#rownames(stage_race_eth) = rownames(stage_1_4_samp)
+#colnames(stage_race_eth)=c("Tumor Stage","Race","Ethnicity")
+
+
+library(pheatmap)
+library(RColorBrewer)
+pheatmap_object=pheatmap(cpm_diff_exp_genes_alive_dead,scale = "row",show_rownames = TRUE,cluster_rows = FALSE,fontsize_col=10,annotation_col = alive_Dead_samp[,-c(1,6)],fontsize_row = 8,cluster_cols = FALSE,show_colnames = FALSE,
+                         col = colorRampPalette(rev(brewer.pal(8, "RdBu")))(50),breaks = seq(-6, 6, length.out = 51),main=(paste("Z score heatmap of differentially expressed genes(N=",nrow(cpm_diff_exp_genes_alive_dead),")",sep="")))
+```
+Enrichment analysis using GO or Reactome database to find what functions are the 
+DE genes involved in.
+```{r}
+library(clusterProfiler)
+library(msigdbr)
+library(org.Mm.eg.db)
+library(magrittr)
+
+
+mm_msigdb_df <- msigdbr(species = "Homo sapiens")
+
+mm_GO_df <- mm_msigdb_df %>%
+  dplyr::filter(
+    gs_collection == "C5", # This is to filter only to the C2 curated gene sets
+    gs_subcollection %in% c("GO:BP","GO:CC","GO:MF") # This is because we only want KEGG pathways
+  )
+
+
+mm_Reactome_df <- mm_msigdb_df %>%
+  dplyr::filter(
+    gs_subcollection == "CP:REACTOME" # This is to filter only to the C2 curated gene sets
+     # This is because we only want KEGG pathways
+  )
+
+
+GO_ora_results <- enricher(
+  gene = deg_order$Ensembl, # A vector of your genes of interest
+  pvalueCutoff = 0.05, # Can choose a FDR cutoff
+  pAdjustMethod = "BH",
+  universe = res_by_vital_status_df$Ensembl,# Method to be used for multiple testing correction
+  # The pathway information should be a data frame with a term name or
+  # identifier and the gene identifiers
+  TERM2GENE = dplyr::select(
+    mm_GO_df,
+    gs_name,
+    ensembl_gene
+  )
+)
+
+
+enrich_plot_GO <- enrichplot::dotplot(GO_ora_results, showCategory=10,font.size=8,title="GO term enrichment for differentially expressed genes in survivors vs non-survivors",orderBy= "p.adjust", decreasing = FALSE)
+enrich_plot_GO
+
+
+Reactome_ora_results <- enricher(
+  gene = deg_order$Ensembl, # A vector of your genes of interest
+  pvalueCutoff = 0.05, # Can choose a FDR cutoff
+  pAdjustMethod = "BH",
+  universe = res_by_vital_status_df$Ensembl,# Method to be used for multiple testing correction
+  # The pathway information should be a data frame with a term name or
+  # identifier and the gene identifiers
+  TERM2GENE = dplyr::select(
+    mm_Reactome_df,
+    gs_name,
+    ensembl_gene
+  )
+)
+
+
+enrich_plot_Reactome <- enrichplot::dotplot(Reactome_ora_results, showCategory=10,font.size=8,title="Reactome term enrichment for differentially expressed genes in survivors vs non-survivors",orderBy= "p.adjust", decreasing = FALSE)
+enrich_plot_Reactome
+
+
+```
+Based on this analysis, the genes differentially expressed between those that died from Rectum adenocarcinoma vs those that did not priarily enrich for various transmembrane transporter genes as well immune response genes such as antimicrobial humoral response with additional involvement of ETC related genes.
+
+In terms of pathways, NR1H2 and NR1H3 are Nuclear receptors that exhibits a ligand-dependent transcriptional activation activity and regulates cholesterol uptake through MYLIP-dependent ubiquitination of LDLR, VLDLR and LRP8; DLDLR and LRP8. These genes are also key regulators of macrophage function, controlling transcriptional programs involved in lipid homeostasis and inflammation.
+
+Of note, macrophages control inflammation in the rectum via polarisation of M0 macrophages to M1 (pro-inflmmatory) and M2 (anti-inflammatory). They can be either pro-inflammatory, potentially inhibiting tumor growth, or anti-inflammatory, promoting tumor development and metastasis.Hence macrophage function via regulation of NR1H2 and NR1H3 receptor activity could be important to determining surival in 
+Rectum adenocarcinoma.
+
+
