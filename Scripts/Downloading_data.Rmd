@@ -1,0 +1,60 @@
+---
+title: "Downloading_data"
+output: html_document
+date: "2025-06-06"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+```{r}
+library(TCGAbiolinks)
+```
+Downloading the gene expression data
+```{r}
+query = GDCquery(project = "TCGA-READ",
+                 data.category = "Transcriptome Profiling",
+                  data.type = "Gene Expression Quantification", 
+                  workflow.type = "STAR - Counts")
+GDCdownload(query = query)
+data <- GDCprepare(query = query)
+
+```
+
+```{r}
+library(SummarizedExperiment)
+count_matrix=data@assays@data$unstranded
+patient_data = as.data.frame(data@colData)
+dim(count_matrix)
+dim(patient_data)
+gene_info=as.data.frame(data@rowRanges)
+rownames(count_matrix) = gene_info$gene_id
+colnames(count_matrix) = patient_data$barcode
+data@elementMetadata
+data@metadata
+
+```
+Writing data for TCGA-READ clinical data to file
+```{r}
+patient_data=as.data.frame(patient_data)
+patient_data=apply(patient_data,2,as.character)
+write.table(patient_data,file="TCGA-READ_patient_Data.txt",col.names = T,row.names = T,sep="\t")
+write.table(count_matrix,file="TCGA-READ_RNASeq_count_Data.txt",col.names = T,row.names = T,sep="\t")
+
+
+```
+
+Another way to download clinical data
+```{r}
+#clin.query <- GDCquery_clinic(project = "TCGA-READ", type = #"clinical",save.csv = TRUE)
+#biospecimen.query <- GDCquery_clinic(project = "TCGA-READ", type = #"Biospecimen",save.csv = TRUE)
+
+
+
+
+
+```
+
